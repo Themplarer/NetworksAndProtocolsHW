@@ -9,19 +9,12 @@ namespace ProtocolsDNS
 {
     internal class DnsResolver
     {
-        private readonly UdpClient udpClient;
         private readonly IPAddress rootServerAIp = IPAddress.Parse("198.41.0.4");
-        private readonly Dictionary<DnsQuestion, (DateTime LifeTimeEnd, byte[] LastMessage)> valueTuples;
-
-        public DnsResolver()
-        {
-            udpClient = new UdpClient();
-            valueTuples = new Dictionary<DnsQuestion, (DateTime, byte[])>();
-        }
+        private readonly Dictionary<DnsQuestion, (DateTime LifeTimeEnd, byte[] LastMessage)> cache = new();
 
         public async Task<(DnsMessage Message, byte[] Bytes)> Resolve(DnsMessage request)
         {
-            if (valueTuples.TryGetValue(request.Questions.First(), out var a) && a is var (lifeTimeEnd, messageBytes) &&
+            if (cache.TryGetValue(request.Questions.First(), out var a) && a is var (lifeTimeEnd, messageBytes) &&
                 lifeTimeEnd > DateTime.Now)
             {
                 var bytesRes = request.Id.ToBytes().Concat(messageBytes[2..]).ToArray();
@@ -32,6 +25,8 @@ namespace ProtocolsDNS
             byte[] bytes;
             var query = DnsMessage.CreateQuery(request.Id, request.Questions.First());
             DnsMessage message;
+
+            using var udpClient = new UdpClient();
 
             do
             {
@@ -59,14 +54,15 @@ namespace ProtocolsDNS
                 }
             } while (!message.Answers.Any());
 
-            valueTuples[request.Questions.First()] =
-                (DateTime.Now + TimeSpan.FromSeconds(message.Answers.Min(a => a.TimeToLive)), bytes);
+            cache[request.Questions.First()] =
+                (DateTime.Now + TimeSpan.FromSeconds(message.Answers.Min(an => an.TimeToLive)), bytes);
             return (message, bytes);
         }
 
         private static async Task<DnsMessage> GetMessageByTcpAsync(IPEndPoint ipEndPoint, byte[] queryBytes)
         {
-            var networkStream = new TcpClient(ipEndPoint).GetStream();
+            using var client = new TcpClient(ipEndPoint);
+            var networkStream = client.GetStream();
             await networkStream.WriteAsync(queryBytes);
             var memory = new Memory<byte>(new byte[1024]);
             await networkStream.ReadAsync(memory);
